@@ -25,7 +25,9 @@ use log::warn;
 use sled_package as sled;
 use tokio::sync::Mutex;
 
-use crate::state::backend::{Keyspace, Lock, StateBackendClient, Watch, WatchEvent};
+use crate::state::backend::{
+    Keyspace, Lock, Operation, StateBackendClient, Watch, WatchEvent,
+};
 
 /// A [`StateBackendClient`] implementation that uses file-based storage to save cluster configuration.
 #[derive(Clone)]
@@ -162,18 +164,39 @@ impl StateBackendClient for StandaloneClient {
             .map(|_| ())
     }
 
-    async fn put_txn(&self, ops: Vec<(Keyspace, String, Vec<u8>)>) -> Result<()> {
+    async fn apply_txn(
+        &self,
+        ops: Vec<(Operation, Keyspace, String, Option<Vec<u8>>)>,
+    ) -> Result<()> {
         let mut batch = sled::Batch::default();
 
-        for (ks, key, value) in ops {
-            let key = format!("/{:?}/{}", ks, key);
-            batch.insert(key.as_str(), value);
+        for (ks, keyspace, key_str, value) in ops {
+            let key = format!("/{:?}/{}", &keyspace, key_str);
+            match ks {
+                Operation::Put => batch.insert(
+                    key.as_str(),
+                    value.ok_or_else(|| ballista_error("Sled cannot conduct Put operation. Put operation value cannot be None"))?,
+                ),
+                Operation::Delete => batch.remove(key.as_str()),
+            }
         }
 
         self.db.apply_batch(batch).map_err(|e| {
             warn!("sled transaction insert failed: {}", e);
-            ballista_error("sled insert failed")
+            ballista_error("sled operations failed")
         })
+    }
+    /// If a transaction needs to lock multiple keyspace/key combination, [`locks`] can be used.
+    /// Since this may cause a race condition if the lock acquire/release order is not considered,
+    /// we used a stable sort via string format while acquiring the locks and reversed order
+    /// while releasing the locks.
+    async fn locks(&self, mut ids: Vec<(Keyspace, &str)>) -> Result<Vec<Box<dyn Lock>>> {
+        ids.sort_by_key(|n| format!("/{:?}/{}", n.0, n.1));
+        let mut res = vec![];
+        for (keyspace, key) in ids {
+            res.push(self.lock(keyspace, key).await?)
+        }
+        Ok(res)
     }
 
     async fn mv(
@@ -279,7 +302,8 @@ impl Stream for SledWatch {
 mod tests {
     use super::{StandaloneClient, StateBackendClient, Watch, WatchEvent};
 
-    use crate::state::backend::Keyspace;
+    use crate::state::backend::{Keyspace, Operation};
+    use crate::state::with_locks;
     use futures::StreamExt;
     use std::result::Result;
 
@@ -296,6 +320,40 @@ mod tests {
             .put(Keyspace::Slots, key.to_owned(), value.to_vec())
             .await?;
         assert_eq!(client.get(Keyspace::Slots, key).await?, value);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn multiple_operation() -> Result<(), Box<dyn std::error::Error>> {
+        let client = create_instance()?;
+        let key = "key".to_string();
+        let value = "value".as_bytes().to_vec();
+        let locks = client
+            .locks(vec![(Keyspace::ActiveJobs, ""), (Keyspace::Slots, "")])
+            .await?;
+
+        let _r: ballista_core::error::Result<()> = with_locks(locks, async {
+            let txn_ops = vec![
+                (
+                    Operation::Put,
+                    Keyspace::Slots,
+                    key.clone(),
+                    Some(value.clone()),
+                ),
+                (
+                    Operation::Put,
+                    Keyspace::ActiveJobs,
+                    key.clone(),
+                    Some(value.clone()),
+                ),
+            ];
+            client.apply_txn(txn_ops).await?;
+            Ok(())
+        })
+        .await;
+
+        assert_eq!(client.get(Keyspace::Slots, key.as_str()).await?, value);
+        assert_eq!(client.get(Keyspace::ActiveJobs, key.as_str()).await?, value);
         Ok(())
     }
 

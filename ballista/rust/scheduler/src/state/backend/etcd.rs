@@ -30,7 +30,9 @@ use etcd_client::{
 use futures::{Stream, StreamExt};
 use log::{debug, error, warn};
 
-use crate::state::backend::{Keyspace, Lock, StateBackendClient, Watch, WatchEvent};
+use crate::state::backend::{
+    Keyspace, Lock, Operation, StateBackendClient, Watch, WatchEvent,
+};
 
 /// A [`StateBackendClient`] implementation that uses etcd to save cluster configuration.
 #[derive(Clone)]
@@ -137,33 +139,52 @@ impl StateBackendClient for EtcdClient {
             .await
             .map_err(|e| {
                 warn!("etcd put failed: {}", e);
-                ballista_error("etcd put failed")
+                ballista_error(&*format!("etcd put failed: {}", e))
             })
             .map(|_| ())
     }
 
-    async fn put_txn(&self, ops: Vec<(Keyspace, String, Vec<u8>)>) -> Result<()> {
+    /// put_txn is changed into apply_txn, since we may want
+    async fn apply_txn(
+        &self,
+        ops: Vec<(Operation, Keyspace, String, Option<Vec<u8>>)>,
+    ) -> Result<()> {
         let mut etcd = self.etcd.clone();
 
-        let txn_ops: Vec<TxnOp> = ops
+        let txn_ops: Result<Vec<TxnOp>> = ops
             .into_iter()
-            .map(|(ks, key, value)| {
+            .map(|(operation, ks, key, value)| {
                 let key = format!("/{}/{:?}/{}", self.namespace, ks, key);
-                TxnOp::put(key, value, None)
+                match operation {
+                    Operation::Put => Ok(TxnOp::put(key.as_str(), value.ok_or_else(|| ballista_error("ETCD cannot conduct Put operation. Put operation value cannot be None"))?, None)),
+                    Operation::Delete => Ok(TxnOp::delete(key.as_str(), None)),
+                }
             })
-            .collect();
+            .collect::<Result<Vec<TxnOp>>>();
 
-        let txn = Txn::new().and_then(txn_ops);
-
-        etcd.txn(txn)
-            .await
-            .map_err(|e| {
-                error!("etcd put failed: {}", e);
-                ballista_error("etcd transaction put failed")
-            })
-            .map(|_| ())
+        match txn_ops {
+            Ok(value) => {
+                let txn = Txn::new().and_then(value);
+                etcd.txn(txn)
+                    .await
+                    .map_err(|e| {
+                        error!("etcd operation failed: {}", e);
+                        ballista_error("etcd transaction put failed")
+                    })
+                    .map(|_| ())
+            }
+            Err(e) => Err(e),
+        }
     }
 
+    async fn locks(&self, mut ids: Vec<(Keyspace, &str)>) -> Result<Vec<Box<dyn Lock>>> {
+        ids.sort_by_key(|n| format!("/{}/{:?}/{}", self.namespace, n.0, n.1));
+        let mut res = vec![];
+        for (keyspace, key) in ids {
+            res.push(self.lock(keyspace, key).await?)
+        }
+        Ok(res)
+    }
     async fn mv(
         &self,
         from_keyspace: Keyspace,
@@ -197,7 +218,6 @@ impl StateBackendClient for EtcdClient {
 
         Ok(())
     }
-
     async fn lock(&self, keyspace: Keyspace, key: &str) -> Result<Box<dyn Lock>> {
         let start = Instant::now();
         let mut etcd = self.etcd.clone();

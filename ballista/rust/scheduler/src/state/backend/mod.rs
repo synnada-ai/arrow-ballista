@@ -49,7 +49,7 @@ impl parse_arg::ParseArgFromStr for StateBackend {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Hash)]
+#[derive(Debug, Eq, PartialEq, Hash, Clone)]
 pub enum Keyspace {
     Executors,
     ActiveJobs,
@@ -58,6 +58,12 @@ pub enum Keyspace {
     Slots,
     Sessions,
     Heartbeats,
+}
+
+#[derive(Debug, Eq, PartialEq, Hash)]
+pub enum Operation {
+    Put,
+    Delete,
 }
 
 /// A trait that contains the necessary methods to save and retrieve the state and configuration of a cluster.
@@ -90,8 +96,15 @@ pub trait StateBackendClient: Send + Sync {
     /// Saves the value into the provided key, overriding any previous data that might have been associated to that key.
     async fn put(&self, keyspace: Keyspace, key: String, value: Vec<u8>) -> Result<()>;
 
-    /// Save multiple values in a single transaction. Either all values should be saved, or all should fail
-    async fn put_txn(&self, ops: Vec<(Keyspace, String, Vec<u8>)>) -> Result<()>;
+    /// Bundle multiple operation in a single transaction. Either all values should be saved, or all should fail.
+    /// It can support multiple type of operations and keyspace. If the count of the unique keyspace is more than one,
+    /// more than one locks has to be acquired.
+    async fn apply_txn(
+        &self,
+        ops: Vec<(Operation, Keyspace, String, Option<Vec<u8>>)>,
+    ) -> Result<()>;
+    /// Acquire mutex with specified IDs.
+    async fn locks(&self, ids: Vec<(Keyspace, &str)>) -> Result<Vec<Box<dyn Lock>>>;
 
     /// Atomically move the given key from one keyspace to another
     async fn mv(
