@@ -164,19 +164,13 @@ impl StateBackendClient for StandaloneClient {
             .map(|_| ())
     }
 
-    async fn apply_txn(
-        &self,
-        ops: Vec<(Operation, Keyspace, String, Option<Vec<u8>>)>,
-    ) -> Result<()> {
+    async fn apply_txn(&self, ops: Vec<(Operation, Keyspace, String)>) -> Result<()> {
         let mut batch = sled::Batch::default();
 
-        for (ks, keyspace, key_str, value) in ops {
+        for (op, keyspace, key_str) in ops {
             let key = format!("/{:?}/{}", &keyspace, key_str);
-            match ks {
-                Operation::Put => batch.insert(
-                    key.as_str(),
-                    value.ok_or_else(|| ballista_error("Sled cannot conduct Put operation. Put operation value cannot be None"))?,
-                ),
+            match op {
+                Operation::Put(value) => batch.insert(key.as_str(), value),
                 Operation::Delete => batch.remove(key.as_str()),
             }
         }
@@ -334,17 +328,11 @@ mod tests {
 
         let _r: ballista_core::error::Result<()> = with_locks(locks, async {
             let txn_ops = vec![
+                (Operation::Put(value.clone()), Keyspace::Slots, key.clone()),
                 (
-                    Operation::Put,
-                    Keyspace::Slots,
-                    key.clone(),
-                    Some(value.clone()),
-                ),
-                (
-                    Operation::Put,
+                    Operation::Put(value.clone()),
                     Keyspace::ActiveJobs,
                     key.clone(),
-                    Some(value.clone()),
                 ),
             ];
             client.apply_txn(txn_ops).await?;

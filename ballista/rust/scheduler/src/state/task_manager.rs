@@ -364,23 +364,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     async fn fail_job_state(&self, job_id: &str, failure_reason: String) -> Result<()> {
-        let txn_operations =
-            |value: Vec<u8>| -> Vec<(Operation, Keyspace, String, Option<Vec<u8>>)> {
-                vec![
-                    (
-                        Operation::Delete,
-                        Keyspace::ActiveJobs,
-                        job_id.to_string(),
-                        None,
-                    ),
-                    (
-                        Operation::Put,
-                        Keyspace::FailedJobs,
-                        job_id.to_string(),
-                        Some(value),
-                    ),
-                ]
-            };
+        let txn_operations = |value: Vec<u8>| -> Vec<(Operation, Keyspace, String)> {
+            vec![
+                (Operation::Delete, Keyspace::ActiveJobs, job_id.to_string()),
+                (
+                    Operation::Put(value),
+                    Keyspace::FailedJobs,
+                    job_id.to_string(),
+                ),
+            ]
+        };
 
         let _res = if let Some(graph) = self.get_active_execution_graph(job_id).await {
             let mut graph = graph.write().await;
@@ -447,14 +440,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
         with_lock(lock, async {
             // Transactional update graphs
-            let txn_ops: Vec<(Operation, Keyspace, String, Option<Vec<u8>>)> =
-                updated_graphs
-                    .into_iter()
-                    .map(|(job_id, graph)| {
-                        let value = self.encode_execution_graph(graph)?;
-                        Ok((Operation::Put, Keyspace::ActiveJobs, job_id, Some(value)))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+            let txn_ops: Vec<(Operation, Keyspace, String)> = updated_graphs
+                .into_iter()
+                .map(|(job_id, graph)| {
+                    let value = self.encode_execution_graph(graph)?;
+                    Ok((Operation::Put(value), Keyspace::ActiveJobs, job_id))
+                })
+                .collect::<Result<Vec<_>>>()?;
             self.state.apply_txn(txn_ops).await?;
             Ok(running_tasks_to_cancel)
         })

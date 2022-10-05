@@ -144,37 +144,28 @@ impl StateBackendClient for EtcdClient {
             .map(|_| ())
     }
 
-    /// put_txn is changed into apply_txn, since we may want
-    async fn apply_txn(
-        &self,
-        ops: Vec<(Operation, Keyspace, String, Option<Vec<u8>>)>,
-    ) -> Result<()> {
+    /// Apply multiple operations in a single transaction.
+    async fn apply_txn(&self, ops: Vec<(Operation, Keyspace, String)>) -> Result<()> {
         let mut etcd = self.etcd.clone();
 
-        let txn_ops: Result<Vec<TxnOp>> = ops
+        let txn_ops: Vec<TxnOp> = ops
             .into_iter()
-            .map(|(operation, ks, key, value)| {
+            .map(|(operation, ks, key)| {
                 let key = format!("/{}/{:?}/{}", self.namespace, ks, key);
                 match operation {
-                    Operation::Put => Ok(TxnOp::put(key.as_str(), value.ok_or_else(|| ballista_error("ETCD cannot conduct Put operation. Put operation value cannot be None"))?, None)),
-                    Operation::Delete => Ok(TxnOp::delete(key.as_str(), None)),
+                    Operation::Put(value) => TxnOp::put(key, value, None),
+                    Operation::Delete => TxnOp::delete(key, None),
                 }
             })
-            .collect::<Result<Vec<TxnOp>>>();
+            .collect();
 
-        match txn_ops {
-            Ok(value) => {
-                let txn = Txn::new().and_then(value);
-                etcd.txn(txn)
-                    .await
-                    .map_err(|e| {
-                        error!("etcd operation failed: {}", e);
-                        ballista_error("etcd transaction put failed")
-                    })
-                    .map(|_| ())
-            }
-            Err(e) => Err(e),
-        }
+        etcd.txn(Txn::new().and_then(txn_ops))
+            .await
+            .map_err(|e| {
+                error!("etcd operation failed: {}", e);
+                ballista_error("etcd transaction failed")
+            })
+            .map(|_| ())
     }
 
     async fn locks(&self, mut ids: Vec<(Keyspace, &str)>) -> Result<Vec<Box<dyn Lock>>> {

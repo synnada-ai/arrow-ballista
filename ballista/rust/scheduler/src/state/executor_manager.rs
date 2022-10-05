@@ -130,7 +130,7 @@ impl ExecutorManager {
 
             let alive_executors = self.get_alive_executors_within_one_minute();
 
-            let mut txn_ops: Vec<(Operation, Keyspace, String, Option<Vec<u8>>)> = vec![];
+            let mut txn_ops: Vec<(Operation, Keyspace, String)> = vec![];
 
             for executor_id in alive_executors {
                 let value = self.state.get(Keyspace::Slots, &executor_id).await?;
@@ -146,12 +146,7 @@ impl ExecutorManager {
 
                 let proto: protobuf::ExecutorData = data.into();
                 let new_data = encode_protobuf(&proto)?;
-                txn_ops.push((
-                    Operation::Put,
-                    Keyspace::Slots,
-                    executor_id,
-                    Some(new_data),
-                ));
+                txn_ops.push((Operation::Put(new_data), Keyspace::Slots, executor_id));
 
                 if desired == 0 {
                     break;
@@ -200,22 +195,14 @@ impl ExecutorManager {
                 }
             }
 
-            let txn_ops: Vec<(Operation, Keyspace, String, Option<Vec<u8>>)> =
-                executor_slots
-                    .into_iter()
-                    .map(|(executor_id, data)| {
-                        let proto: protobuf::ExecutorData = data.into();
-                        let new_data = encode_protobuf(&proto)?;
-                        Ok(
-                            (
-                                Operation::Put,
-                                Keyspace::Slots,
-                                executor_id,
-                                Some(new_data),
-                            ),
-                        )
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+            let txn_ops: Vec<(Operation, Keyspace, String)> = executor_slots
+                .into_iter()
+                .map(|(executor_id, data)| {
+                    let proto: protobuf::ExecutorData = data.into();
+                    let new_data = encode_protobuf(&proto)?;
+                    Ok((Operation::Put(new_data), Keyspace::Slots, executor_id))
+                })
+                .collect::<Result<Vec<_>>>()?;
 
             self.state.apply_txn(txn_ops).await?;
 

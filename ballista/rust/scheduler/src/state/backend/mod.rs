@@ -62,7 +62,7 @@ pub enum Keyspace {
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub enum Operation {
-    Put,
+    Put(Vec<u8>),
     Delete,
 }
 
@@ -99,10 +99,7 @@ pub trait StateBackendClient: Send + Sync {
     /// Bundle multiple operation in a single transaction. Either all values should be saved, or all should fail.
     /// It can support multiple type of operations and keyspace. If the count of the unique keyspace is more than one,
     /// more than one locks has to be acquired.
-    async fn apply_txn(
-        &self,
-        ops: Vec<(Operation, Keyspace, String, Option<Vec<u8>>)>,
-    ) -> Result<()>;
+    async fn apply_txn(&self, ops: Vec<(Operation, Keyspace, String)>) -> Result<()>;
     /// Acquire mutex with specified IDs.
     async fn locks(&self, ids: Vec<(Keyspace, &str)>) -> Result<Vec<Box<dyn Lock>>>;
 
