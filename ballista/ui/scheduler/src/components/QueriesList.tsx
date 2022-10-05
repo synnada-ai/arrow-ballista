@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   CircularProgress,
   CircularProgressLabel,
@@ -25,11 +25,21 @@ import {
   Text,
   Flex,
   Box,
+  useDisclosure,
+  Button,
+  Modal,
+  ModalBody,
+  ModalCloseButton,
+  ModalContent,
+  ModalFooter,
+  ModalHeader,
+  ModalOverlay,
 } from "@chakra-ui/react";
 import { Column, DataTable, LinkCell } from "./DataTable";
 import { FaStop } from "react-icons/fa";
-import { GrDocumentDownload } from "react-icons/gr";
+import { GrDocumentDownload, GrOverview } from "react-icons/gr";
 import fileDownload from "js-file-download";
+import SVG from "react-inlinesvg";
 
 export enum QueryStatus {
   QUEUED = "QUEUED",
@@ -40,6 +50,7 @@ export enum QueryStatus {
 
 export interface Query {
   job_id: string;
+  job_name: string;
   status: QueryStatus;
   num_stages: number;
   percent_complete: number;
@@ -50,6 +61,27 @@ export interface QueriesListProps {
 }
 
 export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
+  const [dot_data, setData] = useState("");
+  const { isOpen, onOpen, onClose } = useDisclosure();
+  const ref = React.useRef<SVGElement>(null);
+
+  const dot_svg = (url: string) => {
+    fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    }).then(async (res) => {
+      setData(await res.text());
+    });
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      dot_svg("/api/job/" + props.value + "/dot_svg");
+    }
+  }, [ref.current, dot_data, isOpen]);
+
   const handleDownload = (url: string, filename: string) => {
     fetch(url, {
       method: "GET",
@@ -74,6 +106,25 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
       >
         <GrDocumentDownload title={"Download DOT Plan"} />
       </button>
+      <Box mx={2}></Box>
+      <button onClick={onOpen}>
+        <GrOverview title={"View Graph"} />
+      </button>
+      <Modal isOpen={isOpen} size="small" onClose={onClose}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Graph for {props.value} job</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody margin="auto">
+            <SVG innerRef={ref} src={dot_data} width="auto" />
+          </ModalBody>
+          <ModalFooter>
+            <Button colorScheme="blue" mr={3} onClick={onClose}>
+              Close
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </Flex>
   );
 };
@@ -91,6 +142,10 @@ const columns: Column<any>[] = [
     Header: "Job ID",
     accessor: "job_id",
     Cell: LinkCell,
+  },
+  {
+    Header: "Job Name",
+    accessor: "job_name",
   },
   {
     Header: "Status",
@@ -113,8 +168,9 @@ const columns: Column<any>[] = [
   },
 ];
 
-const getSkeletion = () => (
+const getSkeleton = () => (
   <>
+    <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />
@@ -129,20 +185,17 @@ export const QueriesList: React.FunctionComponent<QueriesListProps> = ({
   const isLoaded = typeof queries !== "undefined";
 
   return (
-    <VStack flex={1} p={4} w={"100%"} alignItems={"flex-start"}>
-      <Text mb={4}>Queries</Text>
-      <Stack w={"100%"} flex={1}>
-        {isLoaded ? (
-          <DataTable
-            columns={columns}
-            data={queries || []}
-            pageSize={10}
-            pb={10}
-          />
-        ) : (
-          getSkeletion()
-        )}
-      </Stack>
-    </VStack>
+    <Box w={"100%"} flex={1}>
+      {isLoaded ? (
+        <DataTable
+          columns={columns}
+          data={queries || []}
+          pageSize={10}
+          pb={10}
+        />
+      ) : (
+        getSkeleton()
+      )}
+    </Box>
   );
 };

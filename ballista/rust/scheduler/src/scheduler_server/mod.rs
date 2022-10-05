@@ -141,6 +141,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     pub(crate) async fn submit_job(
         &self,
         job_id: &str,
+        job_name: Option<String>,
         ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
     ) -> Result<()> {
@@ -148,6 +149,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobQueued {
                 job_id: job_id.to_owned(),
+                job_name,
                 session_ctx: ctx,
                 plan: Box::new(plan.clone()),
             })
@@ -292,8 +294,8 @@ mod test {
     use ballista_core::error::Result;
 
     use ballista_core::serde::protobuf::{
-        job_status, task_status, CompletedTask, FailedTask, JobStatus, PartitionId,
-        PhysicalPlanNode, ShuffleWritePartition, TaskStatus,
+        failed_task, job_status, task_status, ExecutionError, FailedTask, JobStatus,
+        PhysicalPlanNode, ShuffleWritePartition, SuccessfulTask, TaskStatus,
     };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
@@ -337,7 +339,7 @@ mod test {
         // Submit job
         scheduler
             .state
-            .submit_job(job_id, ctx, &plan)
+            .submit_job(job_id, None, ctx, &plan)
             .await
             .expect("submitting plan");
 
@@ -372,16 +374,19 @@ mod test {
 
                 // Complete the task
                 let task_status = TaskStatus {
-                    status: Some(task_status::Status::Completed(CompletedTask {
+                    task_id: task.task_id as u32,
+                    job_id: task.partition.job_id.clone(),
+                    stage_id: task.partition.stage_id as u32,
+                    stage_attempt_num: task.stage_attempt_num as u32,
+                    partition_id: task.partition.partition_id as u32,
+                    launch_time: 0,
+                    start_exec_time: 0,
+                    end_exec_time: 0,
+                    metrics: vec![],
+                    status: Some(task_status::Status::Successful(SuccessfulTask {
                         executor_id: "executor-1".to_owned(),
                         partitions,
                     })),
-                    metrics: vec![],
-                    task_id: Some(PartitionId {
-                        job_id: job_id.to_owned(),
-                        stage_id: task.partition.stage_id as u32,
-                        partition_id: task.partition.partition_id as u32,
-                    }),
                 };
 
                 scheduler
@@ -401,7 +406,7 @@ mod test {
             .expect("Fail to find graph in the cache");
 
         let final_graph = final_graph.read().await;
-        assert!(final_graph.complete());
+        assert!(final_graph.is_successful());
         assert_eq!(final_graph.output_locations().len(), 4);
 
         for output_location in final_graph.output_locations() {
@@ -439,7 +444,7 @@ mod test {
 
         let job_id = "job";
 
-        scheduler.state.submit_job(job_id, ctx, &plan).await?;
+        scheduler.state.submit_job(job_id, None, ctx, &plan).await?;
 
         // Complete tasks that are offered through scheduler events
         loop {
@@ -452,7 +457,7 @@ mod test {
                     .await
                     .unwrap();
                 let graph = graph.read().await;
-                if graph.complete() {
+                if graph.is_successful() {
                     break;
                 }
                 graph.available_tasks()
@@ -506,18 +511,21 @@ mod test {
 
                                 // Complete the task
                                 let task_status = TaskStatus {
-                                    status: Some(task_status::Status::Completed(
-                                        CompletedTask {
+                                    task_id: task.task_id as u32,
+                                    job_id: task.partition.job_id.clone(),
+                                    stage_id: task.partition.stage_id as u32,
+                                    stage_attempt_num: task.stage_attempt_num as u32,
+                                    partition_id: task.partition.partition_id as u32,
+                                    launch_time: 0,
+                                    start_exec_time: 0,
+                                    end_exec_time: 0,
+                                    metrics: vec![],
+                                    status: Some(task_status::Status::Successful(
+                                        SuccessfulTask {
                                             executor_id: executor.id.clone(),
                                             partitions,
                                         },
                                     )),
-                                    metrics: vec![],
-                                    task_id: Some(PartitionId {
-                                        job_id: job_id.to_owned(),
-                                        stage_id: task.partition.stage_id as u32,
-                                        partition_id: task.partition.partition_id as u32,
-                                    }),
                                 };
 
                                 scheduler
@@ -552,7 +560,7 @@ mod test {
             .get_execution_graph(job_id)
             .await?;
 
-        assert!(final_graph.complete());
+        assert!(final_graph.is_successful());
         assert_eq!(final_graph.output_locations().len(), 4);
 
         Ok(())
@@ -585,7 +593,7 @@ mod test {
 
         let job_id = "job";
 
-        scheduler.state.submit_job(job_id, ctx, &plan).await?;
+        scheduler.state.submit_job(job_id, None, ctx, &plan).await?;
 
         let available_tasks = scheduler
             .state
@@ -637,15 +645,25 @@ mod test {
 
                             // Complete the task
                             let task_status = TaskStatus {
+                                task_id: task.task_id as u32,
+                                job_id: task.partition.job_id.clone(),
+                                stage_id: task.partition.stage_id as u32,
+                                stage_attempt_num: task.stage_attempt_num as u32,
+                                partition_id: task.partition.partition_id as u32,
+                                launch_time: 0,
+                                start_exec_time: 0,
+                                end_exec_time: 0,
+                                metrics: vec![],
                                 status: Some(task_status::Status::Failed(FailedTask {
                                     error: "".to_string(),
+                                    retryable: false,
+                                    count_to_failures: false,
+                                    failed_reason: Some(
+                                        failed_task::FailedReason::ExecutionError(
+                                            ExecutionError {},
+                                        ),
+                                    ),
                                 })),
-                                metrics: vec![],
-                                task_id: Some(PartitionId {
-                                    job_id: job_id.to_owned(),
-                                    stage_id: task.partition.stage_id as u32,
-                                    partition_id: task.partition.partition_id as u32,
-                                }),
                             };
 
                             scheduler
@@ -711,7 +729,7 @@ mod test {
         let job_id = "job";
 
         // This should fail when we try and create the physical plan
-        scheduler.submit_job(job_id, ctx, &plan).await?;
+        scheduler.submit_job(job_id, None, ctx, &plan).await?;
 
         let scheduler = scheduler.clone();
 

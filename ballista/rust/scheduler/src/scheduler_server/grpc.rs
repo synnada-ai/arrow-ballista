@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy};
+use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy, BALLISTA_JOB_NAME};
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 use std::convert::TryInto;
 
@@ -424,8 +424,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             debug!("Received plan for execution: {:?}", plan);
 
             let job_id = self.state.task_manager.generate_job_id();
+            let job_name = config.settings().get(BALLISTA_JOB_NAME);
 
-            self.submit_job(&job_id, session_ctx, &plan)
+            self.submit_job(&job_id, job_name.cloned(), session_ctx, &plan)
                 .await
                 .map_err(|e| {
                     let msg =
@@ -526,17 +527,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let job_id = request.into_inner().job_id;
         info!("Received cancellation request for job {}", job_id);
 
-        self.state
-            .task_manager
-            .cancel_job(&job_id, &self.state.executor_manager)
-            .await
-            .map_err(|e| {
+        match self.state.task_manager.cancel_job(&job_id).await {
+            Ok(tasks) => {
+                self.state.executor_manager.cancel_running_tasks(tasks).await.map_err(|e| {
+                        let msg = format!("Error to cancel running task when cancel the job {} due to {:?}", job_id, e);
+                        error!("{}", msg);
+                        Status::internal(msg)
+                })?;
+                Ok(Response::new(CancelJobResult { cancelled: true }))
+            }
+            Err(e) => {
                 let msg = format!("Error cancelling job {}: {:?}", job_id, e);
-
                 error!("{}", msg);
-                Status::internal(msg)
-            })?;
-        Ok(Response::new(CancelJobResult { cancelled: true }))
+                Ok(Response::new(CancelJobResult { cancelled: false }))
+            }
+        }
     }
 }
 

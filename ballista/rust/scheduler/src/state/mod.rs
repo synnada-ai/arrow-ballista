@@ -251,6 +251,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub(crate) async fn submit_job(
         &self,
         job_id: &str,
+        job_name: Option<String>,
         session_ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
     ) -> Result<()> {
@@ -262,7 +263,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         let plan = session_ctx.create_physical_plan(&optimized_plan).await?;
 
         self.task_manager
-            .submit_job(job_id, &session_ctx.session_id(), plan)
+            .submit_job(job_id, job_name, &session_ctx.session_id(), plan)
             .await?;
 
         let elapsed = start.elapsed();
@@ -301,8 +302,7 @@ mod test {
     use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::{
-        task_status, CompletedTask, PartitionId, PhysicalPlanNode, ShuffleWritePartition,
-        TaskStatus,
+        task_status, PhysicalPlanNode, ShuffleWritePartition, SuccessfulTask, TaskStatus,
     };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
@@ -371,19 +371,39 @@ mod test {
         // Create 4 jobs so we have four pending tasks
         state
             .task_manager
-            .submit_job("job-1", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job(
+                "job-1",
+                None,
+                session_ctx.session_id().as_str(),
+                plan.clone(),
+            )
             .await?;
         state
             .task_manager
-            .submit_job("job-2", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job(
+                "job-2",
+                None,
+                session_ctx.session_id().as_str(),
+                plan.clone(),
+            )
             .await?;
         state
             .task_manager
-            .submit_job("job-3", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job(
+                "job-3",
+                None,
+                session_ctx.session_id().as_str(),
+                plan.clone(),
+            )
             .await?;
         state
             .task_manager
-            .submit_job("job-4", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job(
+                "job-4",
+                None,
+                session_ctx.session_id().as_str(),
+                plan.clone(),
+            )
             .await?;
 
         let executors = test_executors(1, 4);
@@ -428,7 +448,12 @@ mod test {
         // Create a job
         state
             .task_manager
-            .submit_job("job-1", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job(
+                "job-1",
+                None,
+                session_ctx.session_id().as_str(),
+                plan.clone(),
+            )
             .await?;
 
         let executors = test_executors(1, 4);
@@ -436,36 +461,49 @@ mod test {
         let (executor_metadata, executor_data) = executors[0].clone();
 
         // Complete the first stage. So we should now have 4 pending tasks for this job stage 2
-        let mut partitions: Vec<ShuffleWritePartition> = vec![];
-
-        for partition_id in 0..4 {
-            partitions.push(ShuffleWritePartition {
-                partition_id: partition_id as u64,
-                path: "some/path".to_string(),
-                num_batches: 1,
-                num_rows: 1,
-                num_bytes: 1,
-            })
-        }
-
-        state
-            .task_manager
-            .update_task_statuses(
-                &executor_metadata,
-                vec![TaskStatus {
-                    task_id: Some(PartitionId {
+        {
+            let plan_graph = state
+                .task_manager
+                .get_active_execution_graph("job-1")
+                .await
+                .unwrap();
+            let task_def = plan_graph
+                .write()
+                .await
+                .pop_next_task(&executor_data.executor_id)?
+                .unwrap();
+            let mut partitions: Vec<ShuffleWritePartition> = vec![];
+            for partition_id in 0..4 {
+                partitions.push(ShuffleWritePartition {
+                    partition_id: partition_id as u64,
+                    path: "some/path".to_string(),
+                    num_batches: 1,
+                    num_rows: 1,
+                    num_bytes: 1,
+                })
+            }
+            state
+                .task_manager
+                .update_task_statuses(
+                    &executor_metadata,
+                    vec![TaskStatus {
+                        task_id: task_def.task_id as u32,
                         job_id: "job-1".to_string(),
-                        stage_id: 1,
-                        partition_id: 0,
-                    }),
-                    metrics: vec![],
-                    status: Some(task_status::Status::Completed(CompletedTask {
-                        executor_id: "executor-1".to_string(),
-                        partitions,
-                    })),
-                }],
-            )
-            .await?;
+                        stage_id: task_def.partition.stage_id as u32,
+                        stage_attempt_num: task_def.stage_attempt_num as u32,
+                        partition_id: task_def.partition.partition_id as u32,
+                        launch_time: 0,
+                        start_exec_time: 0,
+                        end_exec_time: 0,
+                        metrics: vec![],
+                        status: Some(task_status::Status::Successful(SuccessfulTask {
+                            executor_id: executor_data.executor_id.clone(),
+                            partitions,
+                        })),
+                    }],
+                )
+                .await?;
+        }
 
         state
             .executor_manager
