@@ -17,7 +17,7 @@
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::SessionBuilder;
-use crate::state::backend::{Keyspace, Lock, Operation, StateBackendClient};
+use crate::state::backend::{Keyspace, Operation, StateBackendClient};
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionStage, RunningTaskInfo, TaskDescription,
 };
@@ -447,13 +447,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
         with_lock(lock, async {
             // Transactional update graphs
-            let txn_ops: Vec<(Operation, Keyspace, String, Option<Vec<u8>>)> = updated_graphs
-                .into_iter()
-                .map(|(job_id, graph)| {
-                    let value = self.encode_execution_graph(graph)?;
-                    Ok((Operation::Put, Keyspace::ActiveJobs, job_id, Some(value)))
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let txn_ops: Vec<(Operation, Keyspace, String, Option<Vec<u8>>)> =
+                updated_graphs
+                    .into_iter()
+                    .map(|(job_id, graph)| {
+                        let value = self.encode_execution_graph(graph)?;
+                        Ok((Operation::Put, Keyspace::ActiveJobs, job_id, Some(value)))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
             self.state.apply_txn(txn_ops).await?;
             Ok(running_tasks_to_cancel)
         })
