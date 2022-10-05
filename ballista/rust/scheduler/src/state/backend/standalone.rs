@@ -180,18 +180,6 @@ impl StateBackendClient for StandaloneClient {
             ballista_error("sled operations failed")
         })
     }
-    /// If a transaction needs to lock multiple keyspace/key combination, [`locks`] can be used.
-    /// Since this may cause a race condition if the lock acquire/release order is not considered,
-    /// we used a stable sort via string format while acquiring the locks and reversed order
-    /// while releasing the locks.
-    async fn locks(&self, mut ids: Vec<(Keyspace, &str)>) -> Result<Vec<Box<dyn Lock>>> {
-        ids.sort_by_key(|n| format!("/{:?}/{}", n.0, n.1));
-        let mut res = vec![];
-        for (keyspace, key) in ids {
-            res.push(self.lock(keyspace, key).await?)
-        }
-        Ok(res)
-    }
 
     async fn mv(
         &self,
@@ -323,7 +311,7 @@ mod tests {
         let key = "key".to_string();
         let value = "value".as_bytes().to_vec();
         let locks = client
-            .locks(vec![(Keyspace::ActiveJobs, ""), (Keyspace::Slots, "")])
+            .acquire_locks(vec![(Keyspace::ActiveJobs, ""), (Keyspace::Slots, "")])
             .await?;
 
         let _r: ballista_core::error::Result<()> = with_locks(locks, async {

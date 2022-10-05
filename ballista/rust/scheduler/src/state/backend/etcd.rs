@@ -163,19 +163,11 @@ impl StateBackendClient for EtcdClient {
             .await
             .map_err(|e| {
                 error!("etcd operation failed: {}", e);
-                ballista_error("etcd transaction failed")
+                ballista_error(&*format!("etcd operation failed: {}", e))
             })
             .map(|_| ())
     }
 
-    async fn locks(&self, mut ids: Vec<(Keyspace, &str)>) -> Result<Vec<Box<dyn Lock>>> {
-        ids.sort_by_key(|n| format!("/{}/{:?}/{}", self.namespace, n.0, n.1));
-        let mut res = vec![];
-        for (keyspace, key) in ids {
-            res.push(self.lock(keyspace, key).await?)
-        }
-        Ok(res)
-    }
     async fn mv(
         &self,
         from_keyspace: Keyspace,
@@ -209,6 +201,7 @@ impl StateBackendClient for EtcdClient {
 
         Ok(())
     }
+
     async fn lock(&self, keyspace: Keyspace, key: &str) -> Result<Box<dyn Lock>> {
         let start = Instant::now();
         let mut etcd = self.etcd.clone();

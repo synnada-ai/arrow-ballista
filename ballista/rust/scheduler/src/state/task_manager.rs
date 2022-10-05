@@ -322,7 +322,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ) -> Result<Vec<RunningTaskInfo>> {
         let locks = self
             .state
-            .locks(vec![
+            .acquire_locks(vec![
                 (Keyspace::ActiveJobs, job_id),
                 (Keyspace::FailedJobs, job_id),
             ])
@@ -355,7 +355,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         debug!("Moving job {} from Active or Queue to Failed", job_id);
         let locks = self
             .state
-            .locks(vec![
+            .acquire_locks(vec![
                 (Keyspace::ActiveJobs, job_id),
                 (Keyspace::FailedJobs, job_id),
             ])
